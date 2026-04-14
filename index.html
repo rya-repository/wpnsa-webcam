@@ -39,6 +39,82 @@
       height: 100%;
       border: 0;
     }
+    .video-panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .youtube-shell {
+      position: relative;
+      flex: 0 0 auto;
+      width: 100%;
+      min-height: 220px;
+      aspect-ratio: 16 / 9;
+      background: #000;
+    }
+    .youtube-shell iframe,
+    .youtube-shell .video-fallback {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .weather-panel {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      border-top: 1px solid #1f2937;
+      background: #060f1c;
+      color: #d6e0ef;
+      font: 500 13px/1.35 "Segoe UI", sans-serif;
+    }
+    .weather-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      background: #0b1f38;
+      border-bottom: 1px solid #1f2937;
+    }
+    .weather-header strong {
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .weather-header a {
+      color: #8ecbff;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .weather-header a:hover,
+    .weather-header a:focus {
+      text-decoration: underline;
+    }
+    .weather-frame {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+      border: 0;
+      background: #000;
+      transform-origin: top left;
+    }
+    .weather-frame-wrap {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+      background: #000;
+    }
+    .weather-note {
+      display: none;
+      padding: 10px 12px;
+      color: #dbeafe;
+      background: #14243a;
+      border-top: 1px solid #1f2937;
+    }
     .video-fallback {
       display: none;
       width: 100%;
@@ -73,6 +149,9 @@
         grid-template-columns: 1fr;
         grid-template-rows: 1fr 1fr;
       }
+      .youtube-shell {
+        min-height: 180px;
+      }
       .status-overlay {
         max-width: 92vw;
       }
@@ -85,14 +164,35 @@
       <video id="video" autoplay muted playsinline crossorigin="anonymous"></video>
       <div id="status" class="status-overlay">Starting...</div>
     </section>
-    <section class="panel video-panel" aria-label="YouTube video">
-      <iframe id="youtubeFrame" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-      <div id="youtubeFallback" class="video-fallback" role="note" aria-live="polite">
-        <div>YouTube embed is blocked from local file pages (Error 153).</div>
-        <div>Run this folder from a local web server, then open it in the browser.</div>
-        <div>Example command in this folder: <strong>py -m http.server 8080</strong></div>
-        <div>Then open <a href="http://localhost:8080/" target="_blank" rel="noopener noreferrer">http://localhost:8080/</a></div>
+    <section class="panel video-panel" aria-label="YouTube video and weather info">
+      <div class="youtube-shell">
+        <iframe id="youtubeFrame" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+        <div id="youtubeFallback" class="video-fallback" role="note" aria-live="polite">
+          <div>YouTube embed is blocked from local file pages (Error 153).</div>
+          <div>Run this folder from a local web server, then open it in the browser.</div>
+          <div>Example command in this folder: <strong>py -m http.server 8080</strong></div>
+          <div>Then open <a href="http://localhost:8080/" target="_blank" rel="noopener noreferrer">http://localhost:8080/</a></div>
+        </div>
       </div>
+
+      <aside class="weather-panel" aria-label="Weather gauge information">
+        <div class="weather-header">
+          <strong>Portland Harbour Weather Gauge</strong>
+          <a href="https://weatherfile.com/location?loc_id=GBR00005#gaugecontainer" target="_blank" rel="noopener noreferrer">Open full weather page</a>
+        </div>
+        <div class="weather-frame-wrap">
+          <iframe
+            id="weatherGaugeFrame"
+            class="weather-frame"
+            title="WeatherFile gauge container"
+            loading="lazy"
+            referrerpolicy="strict-origin-when-cross-origin"
+            src="https://weatherfile.com/kiosk/wind-kiosk.php?locationID=GBR00005&wsunits=kts"></iframe>
+        </div>
+        <div id="weatherFrameNote" class="weather-note">
+          If your browser blocks this embedded view, use the “Open full weather page” link above.
+        </div>
+      </aside>
     </section>
   </div>
 
@@ -119,6 +219,57 @@
 
       params.set('origin', window.location.origin);
       frame.src = 'https://www.youtube-nocookie.com/embed/' + videoId + '?' + params.toString();
+    })();
+
+    (function configureWeatherFrame() {
+      const frame = document.getElementById('weatherGaugeFrame');
+      const frameWrap = frame.parentElement;
+      const note = document.getElementById('weatherFrameNote');
+      const baseUrl = 'https://weatherfile.com/kiosk/wind-kiosk.php?locationID=GBR00005&wsunits=mps';
+      const baseWidth = 1920;
+      const baseHeight = 1080;
+      let loaded = false;
+
+      function fitWeatherFrame() {
+        const wrapWidth = frameWrap.clientWidth;
+        const wrapHeight = frameWrap.clientHeight;
+        if (!wrapWidth || !wrapHeight) {
+          return;
+        }
+
+        const scale = Math.min(wrapWidth / baseWidth, wrapHeight / baseHeight);
+        const offsetX = (wrapWidth - (baseWidth * scale)) / 2;
+        const offsetY = (wrapHeight - (baseHeight * scale)) / 2;
+
+        frame.style.width = baseWidth + 'px';
+        frame.style.height = baseHeight + 'px';
+        frame.style.transform = 'translate(' + offsetX + 'px, ' + offsetY + 'px) scale(' + scale + ')';
+      }
+
+      frame.addEventListener('load', () => {
+        loaded = true;
+        fitWeatherFrame();
+      });
+
+      window.addEventListener('resize', fitWeatherFrame);
+
+      function reloadWeatherFrame() {
+        const nextUrl = new URL(baseUrl);
+        nextUrl.searchParams.set('_ts', String(Date.now()));
+        frame.src = nextUrl.toString();
+      }
+
+      fitWeatherFrame();
+
+      // Refresh embedded weather page every 60 seconds.
+      setInterval(reloadWeatherFrame, 60000);
+
+      // If the frame never loads (blocked by browser/site policy), show a fallback note.
+      setTimeout(() => {
+        if (!loaded) {
+          note.style.display = 'block';
+        }
+      }, 5000);
     })();
   </script>
 </body>

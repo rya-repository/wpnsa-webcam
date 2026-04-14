@@ -2,7 +2,7 @@ const video = document.getElementById('video');
 const status = document.getElementById('status');
 const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
 let hls;
-const hardReloadMs = 10000;
+const hardReloadMs = 10 * 60 * 1000;
 const freezeReloadMs = 60000;
 const startupGraceMs = 30000;
 const pageStartedAtMs = Date.now();
@@ -10,6 +10,28 @@ let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
 let freezeReloadArmed = false;
 let commonRecoveryBound = false;
+let recentStallCount = 0;
+let stallWindowStartedAtMs = Date.now();
+
+function resetStallWindowIfNeeded(nowMs) {
+  if (nowMs - stallWindowStartedAtMs > 30000) {
+    stallWindowStartedAtMs = nowMs;
+    recentStallCount = 0;
+  }
+}
+
+function markStallAndMaybeReconnect(reason) {
+  const nowMs = Date.now();
+  resetStallWindowIfNeeded(nowMs);
+  recentStallCount += 1;
+
+  if (recentStallCount >= 4) {
+    reconnectStream(reason || 'Repeated stalls detected. Reconnecting stream...');
+    return true;
+  }
+
+  return false;
+}
 
 function setStatus(message) {
   status.textContent = message;
@@ -51,6 +73,10 @@ function attachCommonRecovery() {
   commonRecoveryBound = true;
 
   video.addEventListener('stalled', () => {
+    if (markStallAndMaybeReconnect('Video stalled repeatedly. Reconnecting stream...')) {
+      return;
+    }
+
     if (hls && Number.isFinite(video.currentTime)) {
       hls.startLoad();
       video.currentTime = Math.max(0, video.currentTime - 0.1);
@@ -68,6 +94,17 @@ function attachCommonRecovery() {
       tryPlay();
     }
   });
+
+  video.addEventListener('waiting', () => {
+    if (markStallAndMaybeReconnect('Playback waiting repeatedly. Reconnecting stream...')) {
+      return;
+    }
+
+    if (hls) {
+      hls.startLoad();
+    }
+    tryPlay();
+  });
 }
 
 function destroyHlsInstance() {
@@ -82,6 +119,8 @@ function reconnectStream(reason) {
   freezeReloadArmed = false;
   lastObservedTimeSec = 0;
   lastAdvanceAtMs = Date.now();
+  recentStallCount = 0;
+  stallWindowStartedAtMs = Date.now();
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -93,11 +132,15 @@ function connectStream() {
   if (window.Hls && Hls.isSupported()) {
     setStatus('HLS.js supported. Connecting stream...');
     const nextHls = new Hls({
+      enableWorker: false,
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 10,
       maxLiveSyncPlaybackRate: 1.2,
-      backBufferLength: 30,
-      maxBufferLength: 20,
+      backBufferLength: 10,
+      maxBufferLength: 12,
+      maxBufferHole: 0.5,
+      nudgeOffset: 0.1,
+      nudgeMaxRetry: 8,
       lowLatencyMode: false
     });
     hls = nextHls;
@@ -125,6 +168,17 @@ function connectStream() {
       }
       setStatus('HLS error: ' + data.type + ' / ' + data.details + (data.fatal ? ' (fatal)' : ''));
       if (!data.fatal) {
+        if (data.details === 'bufferStalledError' || data.details === 'bufferNudgeOnStall') {
+          if (markStallAndMaybeReconnect('Repeated buffer stall. Reconnecting stream...')) {
+            return;
+          }
+
+          if (Number.isFinite(video.currentTime)) {
+            video.currentTime = Math.max(0, video.currentTime - 0.05);
+          }
+          nextHls.startLoad();
+          tryPlay();
+        }
         return;
       }
 
