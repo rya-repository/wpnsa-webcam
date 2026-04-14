@@ -10,13 +10,47 @@
       background: black;
       height: 100%;
     }
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #000;
+    }
+    .panel {
+      position: relative;
+      overflow: hidden;
+      background: #000;
+    }
     video {
       width: 100%;
       height: 100%;
       object-fit: cover;
     }
+    .video-panel iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
+    .video-fallback {
+      display: none;
+      width: 100%;
+      height: 100%;
+      box-sizing: border-box;
+      padding: 24px;
+      place-content: center;
+      gap: 10px;
+      color: #fff;
+      text-align: center;
+      font: 500 16px/1.4 "Segoe UI", sans-serif;
+      background: #0f0f0f;
+    }
+    .video-fallback a {
+      color: #8ecbff;
+    }
     .clock-overlay {
-      position: fixed;
+      position: absolute;
       top: 1.2vmin;
       right: 1.2vmin;
       z-index: 10;
@@ -29,7 +63,7 @@
       text-align: right;
     }
     .status-overlay {
-      position: fixed;
+      position: absolute;
       left: 12px;
       bottom: 12px;
       z-index: 10;
@@ -41,205 +75,59 @@
       max-width: 70vw;
       white-space: pre-line;
     }
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 1fr;
+      }
+      .status-overlay {
+        max-width: 92vw;
+      }
+    }
   </style>
 </head>
 <body>
-  <video id="video" autoplay muted playsinline crossorigin="anonymous"></video>
-  <div id="clock" class="clock-overlay" aria-live="off"></div>
-  <div id="status" class="status-overlay">Starting...</div>
+  <div class="layout">
+    <section class="panel webcam-panel" aria-label="Webcam stream">
+      <video id="video" autoplay muted playsinline crossorigin="anonymous"></video>
+      <div id="clock" class="clock-overlay" aria-live="off"></div>
+      <div id="status" class="status-overlay">Starting...</div>
+    </section>
+    <section class="panel video-panel" aria-label="YouTube video">
+      <iframe id="youtubeFrame" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+      <div id="youtubeFallback" class="video-fallback" role="note" aria-live="polite">
+        <div>YouTube embed is blocked from local file pages (Error 153).</div>
+        <div>Run this folder from a local web server, then open it in the browser.</div>
+        <div>Example command in this folder: <strong>py -m http.server 8080</strong></div>
+        <div>Then open <a href="http://localhost:8080/" target="_blank" rel="noopener noreferrer">http://localhost:8080/</a></div>
+      </div>
+    </section>
+  </div>
 
+  <script src="webcam.js"></script>
   <script>
-    const video = document.getElementById('video');
-    const clock = document.getElementById('clock');
-    const status = document.getElementById('status');
-    const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
-    let hls;
-    let streamClockMs = Date.now();
-    let lastVideoTimeSec = 0;
-    let streamClockInitialized = false;
-    const hardReloadMs = 10000;
-    const freezeReloadMs = 60000;
-    const startupGraceMs = 30000;
-    const pageStartedAtMs = Date.now();
-    let lastAdvanceAtMs = Date.now();
-    let lastObservedTimeSec = 0;
-    let freezeReloadArmed = false;
-
-    function setStatus(message) {
-      status.textContent = message;
-    }
-
-    function pad2(value) {
-      return value < 10 ? '0' + value : String(value);
-    }
-
-    function updateClock() {
-      if (Number.isFinite(video.currentTime)) {
-        if (!streamClockInitialized) {
-          streamClockInitialized = true;
-          lastVideoTimeSec = video.currentTime;
-        }
-
-        const deltaSec = Math.max(0, video.currentTime - lastVideoTimeSec);
-        streamClockMs += deltaSec * 1000;
-        lastVideoTimeSec = video.currentTime;
-      }
-
-      const now = new Date(streamClockMs);
-      let formatted;
-      try {
-        formatted = now.toLocaleString('en-GB', {
-          month: 'short',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: false
-        });
-      } catch (_) {
-        // Fallback for older webviews with limited Intl support.
-        const y = now.getFullYear();
-        const m = pad2(now.getMonth() + 1);
-        const d = pad2(now.getDate());
-        const hh = pad2(now.getHours());
-        const mm = pad2(now.getMinutes());
-        const ss = pad2(now.getSeconds());
-        formatted = d + '/' + m + '/' + y + ' ' + hh + ':' + mm + ':' + ss;
-      }
-      clock.textContent = formatted;
-    }
-
-    updateClock();
-    setInterval(updateClock, 1000);
-    setInterval(() => {
-      setStatus('Scheduled reload...');
-      window.location.reload();
-    }, hardReloadMs);
-
-    video.addEventListener('playing', () => {
-      if (!streamClockInitialized) {
-        streamClockMs = Date.now();
-        lastVideoTimeSec = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-        streamClockInitialized = true;
-      }
-    });
-
-    function tryPlay() {
-      const playPromise = video.play();
-      if (playPromise && typeof playPromise.catch === 'function') {
-        playPromise.catch(() => {
-          // UC Cast/kiosk browsers can temporarily reject autoplay; retry shortly.
-          setTimeout(() => video.play().catch(() => {}), 1000);
-        });
-      }
-    }
-
-    window.addEventListener('error', (event) => {
-      setStatus('JS error: ' + event.message);
-    });
-
-    video.addEventListener('error', () => {
-      setStatus('Video error code: ' + (video.error ? video.error.code : 'unknown'));
-    });
-
-    video.addEventListener('timeupdate', () => {
-      if (!Number.isFinite(video.currentTime)) {
-        return;
-      }
-      if (video.currentTime > lastObservedTimeSec + 0.05) {
-        lastObservedTimeSec = video.currentTime;
-        lastAdvanceAtMs = Date.now();
-        freezeReloadArmed = true;
-      }
-    });
-
-    function attachCommonRecovery() {
-      video.addEventListener('stalled', () => {
-        if (hls && Number.isFinite(video.currentTime)) {
-          hls.startLoad();
-          video.currentTime = Math.max(0, video.currentTime - 0.1);
-          tryPlay();
-        }
+    (function configureYouTubeEmbed() {
+      const frame = document.getElementById('youtubeFrame');
+      const fallback = document.getElementById('youtubeFallback');
+      const videoId = 'Fb6s9NQ3r6Q';
+      const params = new URLSearchParams({
+        autoplay: '1',
+        mute: '1',
+        controls: '0',
+        rel: '0',
+        modestbranding: '1',
+        playsinline: '1'
       });
 
-      video.addEventListener('pause', () => {
-        // Keep playback alive for unattended display playback.
-        if (!video.ended) {
-          tryPlay();
-        }
-      });
-    }
-
-    if (window.Hls && Hls.isSupported()) {
-      setStatus('HLS.js supported. Connecting stream...');
-      hls = new Hls({
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 10,
-        maxLiveSyncPlaybackRate: 1.2,
-        backBufferLength: 30,
-        maxBufferLength: 20,
-        lowLatencyMode: false
-      });
-
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        setStatus('Media attached. Loading manifest...');
-        hls.loadSource(src);
-      });
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setStatus('Manifest parsed. Playing...');
-        tryPlay();
-      });
-
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        setStatus('HLS error: ' + data.type + ' / ' + data.details + (data.fatal ? ' (fatal)' : ''));
-        if (!data.fatal) {
-          return;
-        }
-
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          hls.startLoad();
-        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          hls.recoverMediaError();
-        } else {
-          hls.destroy();
-          setTimeout(() => window.location.reload(), 1500);
-        }
-      });
-
-      attachCommonRecovery();
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      setStatus('Native HLS detected. Loading stream...');
-      video.src = src;
-      video.addEventListener('loadedmetadata', tryPlay);
-      attachCommonRecovery();
-    } else {
-      setStatus('This browser does not support HLS playback.');
-    }
-
-    setInterval(() => {
-      const nowMs = Date.now();
-      if (
-        freezeReloadArmed &&
-        nowMs - pageStartedAtMs > startupGraceMs &&
-        Number.isFinite(video.currentTime) &&
-        !video.paused &&
-        !video.ended &&
-        video.readyState >= 2 &&
-        nowMs - lastAdvanceAtMs > freezeReloadMs
-      ) {
-        setStatus('Playback stalled. Reloading page...');
-        window.location.reload();
+      if (window.location.protocol === 'file:') {
+        frame.style.display = 'none';
+        fallback.style.display = 'grid';
         return;
       }
 
-      setStatus(
-        'readyState=' + video.readyState +
-        ' networkState=' + video.networkState +
-        ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's'
-      );
-    }, 4000);
+      params.set('origin', window.location.origin);
+      frame.src = 'https://www.youtube-nocookie.com/embed/' + videoId + '?' + params.toString();
+    })();
   </script>
 </body>
 </html>
