@@ -1,11 +1,7 @@
 const video = document.getElementById('video');
-const clock = document.getElementById('clock');
 const status = document.getElementById('status');
 const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
 let hls;
-let streamClockMs = Date.now();
-let lastVideoTimeSec = 0;
-let streamClockInitialized = false;
 const hardReloadMs = 10000;
 const freezeReloadMs = 60000;
 const startupGraceMs = 30000;
@@ -18,57 +14,6 @@ let commonRecoveryBound = false;
 function setStatus(message) {
   status.textContent = message;
 }
-
-function pad2(value) {
-  return value < 10 ? '0' + value : String(value);
-}
-
-function updateClock() {
-  if (Number.isFinite(video.currentTime)) {
-    if (!streamClockInitialized) {
-      streamClockInitialized = true;
-      lastVideoTimeSec = video.currentTime;
-    }
-
-    const deltaSec = Math.max(0, video.currentTime - lastVideoTimeSec);
-    streamClockMs += deltaSec * 1000;
-    lastVideoTimeSec = video.currentTime;
-  }
-
-  const now = new Date(streamClockMs);
-  let formatted;
-  try {
-    formatted = now.toLocaleString('en-GB', {
-      month: 'short',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    });
-  } catch (_) {
-    // Fallback for older webviews with limited Intl support.
-    const y = now.getFullYear();
-    const m = pad2(now.getMonth() + 1);
-    const d = pad2(now.getDate());
-    const hh = pad2(now.getHours());
-    const mm = pad2(now.getMinutes());
-    const ss = pad2(now.getSeconds());
-    formatted = d + '/' + m + '/' + y + ' ' + hh + ':' + mm + ':' + ss;
-  }
-  clock.textContent = formatted;
-}
-
-updateClock();
-setInterval(updateClock, 1000);
-
-video.addEventListener('playing', () => {
-  if (!streamClockInitialized) {
-    streamClockMs = Date.now();
-    lastVideoTimeSec = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-    streamClockInitialized = true;
-  }
-});
 
 function tryPlay() {
   const playPromise = video.play();

@@ -55,19 +55,6 @@
     .video-fallback a {
       color: #8ecbff;
     }
-    .clock-overlay {
-      position: absolute;
-      top: 1.2vmin;
-      right: 1.2vmin;
-      z-index: 10;
-      color: black;
-      background: rgba(255, 255, 255, 0.95);
-      padding: clamp(12px, 1.2vmin, 24px) clamp(14px, 1.5vmin, 30px);
-      border-radius: clamp(6px, 0.6vmin, 14px);
-      font: 700 clamp(36px, 4.2vw, 96px)/1.15 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      letter-spacing: 0.02em;
-      text-align: right;
-    }
     .status-overlay {
       position: absolute;
       left: 12px;
@@ -96,7 +83,6 @@
   <div class="layout">
     <section class="panel webcam-panel" aria-label="Webcam stream">
       <video id="video" autoplay muted playsinline crossorigin="anonymous"></video>
-      <div id="clock" class="clock-overlay" aria-live="off"></div>
       <div id="status" class="status-overlay">Starting...</div>
     </section>
     <section class="panel video-panel" aria-label="YouTube video">
