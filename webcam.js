@@ -5,6 +5,8 @@ let hls;
 const hardReloadMs = 10 * 60 * 1000;
 const freezeReloadMs = 60000;
 const startupGraceMs = 30000;
+const stuckStartupReloadMs = 25000;
+const minReconnectGapMs = 5000;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -12,6 +14,9 @@ let freezeReloadArmed = false;
 let commonRecoveryBound = false;
 let recentStallCount = 0;
 let stallWindowStartedAtMs = Date.now();
+let connectStartedAtMs = Date.now();
+let lastReconnectAtMs = 0;
+let mediaFatalRecoveryCount = 0;
 
 function resetStallWindowIfNeeded(nowMs) {
   if (nowMs - stallWindowStartedAtMs > 30000) {
@@ -52,7 +57,13 @@ window.addEventListener('error', (event) => {
 });
 
 video.addEventListener('error', () => {
-  setStatus('Video error code: ' + (video.error ? video.error.code : 'unknown'));
+  const code = video.error ? video.error.code : 'unknown';
+  setStatus('Video error code: ' + code);
+
+  // MEDIA_ERR_DECODE (3) commonly appears on kiosk browsers after long runs.
+  if (code === 3) {
+    reconnectStream('Video decode error (code 3). Reconnecting stream...');
+  }
 });
 
 video.addEventListener('timeupdate', () => {
@@ -115,12 +126,21 @@ function destroyHlsInstance() {
 }
 
 function reconnectStream(reason) {
+  const nowMs = Date.now();
+  if (nowMs - lastReconnectAtMs < minReconnectGapMs) {
+    setStatus('Reconnect cooldown active...');
+    return;
+  }
+  lastReconnectAtMs = nowMs;
+
   setStatus(reason || 'Reconnecting stream...');
   freezeReloadArmed = false;
   lastObservedTimeSec = 0;
-  lastAdvanceAtMs = Date.now();
+  lastAdvanceAtMs = nowMs;
   recentStallCount = 0;
-  stallWindowStartedAtMs = Date.now();
+  stallWindowStartedAtMs = nowMs;
+  connectStartedAtMs = nowMs;
+  mediaFatalRecoveryCount = 0;
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -129,6 +149,8 @@ function reconnectStream(reason) {
 }
 
 function connectStream() {
+  connectStartedAtMs = Date.now();
+
   if (window.Hls && Hls.isSupported()) {
     setStatus('HLS.js supported. Connecting stream...');
     const nextHls = new Hls({
@@ -137,7 +159,7 @@ function connectStream() {
       liveMaxLatencyDurationCount: 10,
       maxLiveSyncPlaybackRate: 1.2,
       backBufferLength: 10,
-      maxBufferLength: 12,
+      maxBufferLength: 8,
       maxBufferHole: 0.5,
       nudgeOffset: 0.1,
       nudgeMaxRetry: 8,
@@ -158,6 +180,7 @@ function connectStream() {
       if (hls !== nextHls) {
         return;
       }
+      mediaFatalRecoveryCount = 0;
       setStatus('Manifest parsed. Playing...');
       tryPlay();
     });
@@ -185,7 +208,12 @@ function connectStream() {
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
         nextHls.startLoad();
       } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-        nextHls.recoverMediaError();
+        mediaFatalRecoveryCount += 1;
+        if (mediaFatalRecoveryCount <= 2) {
+          nextHls.recoverMediaError();
+        } else {
+          reconnectStream('Repeated fatal media error. Reconnecting stream...');
+        }
       } else {
         reconnectStream('Fatal player error. Reconnecting stream...');
       }
@@ -214,6 +242,18 @@ setInterval(() => {
 
 setInterval(() => {
   const nowMs = Date.now();
+
+  if (
+    nowMs - pageStartedAtMs > startupGraceMs &&
+    !freezeReloadArmed &&
+    video.readyState <= 1 &&
+    (video.networkState === 1 || video.networkState === 2) &&
+    nowMs - connectStartedAtMs > stuckStartupReloadMs
+  ) {
+    reconnectStream('Startup stuck (readyState <= 1). Reconnecting stream...');
+    return;
+  }
+
   if (
     freezeReloadArmed &&
     nowMs - pageStartedAtMs > startupGraceMs &&
