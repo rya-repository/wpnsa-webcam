@@ -57,6 +57,7 @@
     let streamClockMs = Date.now();
     let lastVideoTimeSec = 0;
     let streamClockInitialized = false;
+    const hardReloadMs = 10000;
     const freezeReloadMs = 60000;
     const startupGraceMs = 30000;
     const pageStartedAtMs = Date.now();
@@ -87,14 +88,13 @@
       const now = new Date(streamClockMs);
       let formatted;
       try {
-        formatted = now.toLocaleString(undefined, {
-          weekday: 'short',
-          year: 'numeric',
+        formatted = now.toLocaleString('en-GB', {
           month: 'short',
           day: '2-digit',
           hour: '2-digit',
           minute: '2-digit',
-          second: '2-digit'
+          second: '2-digit',
+          hour12: false
         });
       } catch (_) {
         // Fallback for older webviews with limited Intl support.
@@ -111,6 +111,10 @@
 
     updateClock();
     setInterval(updateClock, 1000);
+    setInterval(() => {
+      setStatus('Scheduled reload...');
+      window.location.reload();
+    }, hardReloadMs);
 
     video.addEventListener('playing', () => {
       if (!streamClockInitialized) {
