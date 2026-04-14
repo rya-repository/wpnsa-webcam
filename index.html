@@ -28,29 +28,64 @@
       letter-spacing: 0.02em;
       text-align: right;
     }
+    .status-overlay {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      z-index: 10;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font: 500 12px/1.4 "Segoe UI", sans-serif;
+      max-width: 70vw;
+      white-space: pre-line;
+    }
   </style>
 </head>
 <body>
   <video id="video" autoplay muted playsinline crossorigin="anonymous"></video>
   <div id="clock" class="clock-overlay" aria-live="off"></div>
+  <div id="status" class="status-overlay">Starting...</div>
 
   <script>
     const video = document.getElementById('video');
     const clock = document.getElementById('clock');
+    const status = document.getElementById('status');
     const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
     let hls;
 
+    function setStatus(message) {
+      status.textContent = message;
+    }
+
+    function pad2(value) {
+      return value < 10 ? '0' + value : String(value);
+    }
+
     function updateClock() {
       const now = new Date();
-      const formatted = now.toLocaleString(undefined, {
-        weekday: 'short',
-        year: 'numeric',
-        month: 'short',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      });
+      let formatted;
+      try {
+        formatted = now.toLocaleString(undefined, {
+          weekday: 'short',
+          year: 'numeric',
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+      } catch (_) {
+        // Fallback for older webviews with limited Intl support.
+        const y = now.getFullYear();
+        const m = pad2(now.getMonth() + 1);
+        const d = pad2(now.getDate());
+        const hh = pad2(now.getHours());
+        const mm = pad2(now.getMinutes());
+        const ss = pad2(now.getSeconds());
+        formatted = d + '/' + m + '/' + y + ' ' + hh + ':' + mm + ':' + ss;
+      }
       clock.textContent = formatted;
     }
 
@@ -66,6 +101,14 @@
         });
       }
     }
+
+    window.addEventListener('error', (event) => {
+      setStatus('JS error: ' + event.message);
+    });
+
+    video.addEventListener('error', () => {
+      setStatus('Video error code: ' + (video.error ? video.error.code : 'unknown'));
+    });
 
     function attachCommonRecovery() {
       video.addEventListener('stalled', () => {
@@ -85,6 +128,7 @@
     }
 
     if (window.Hls && Hls.isSupported()) {
+      setStatus('HLS.js supported. Connecting stream...');
       hls = new Hls({
         liveSyncDurationCount: 3,
         liveMaxLatencyDurationCount: 10,
@@ -96,14 +140,17 @@
 
       hls.attachMedia(video);
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        setStatus('Media attached. Loading manifest...');
         hls.loadSource(src);
       });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setStatus('Manifest parsed. Playing...');
         tryPlay();
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
+        setStatus('HLS error: ' + data.type + ' / ' + data.details + (data.fatal ? ' (fatal)' : ''));
         if (!data.fatal) {
           return;
         }
@@ -120,10 +167,21 @@
 
       attachCommonRecovery();
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      setStatus('Native HLS detected. Loading stream...');
       video.src = src;
       video.addEventListener('loadedmetadata', tryPlay);
       attachCommonRecovery();
+    } else {
+      setStatus('This browser does not support HLS playback.');
     }
+
+    setInterval(() => {
+      setStatus(
+        'readyState=' + video.readyState +
+        ' networkState=' + video.networkState +
+        ' time=' + (Number.isFinite(video.currentTime) ? video.currentTime.toFixed(1) : 'n/a')
+      );
+    }, 4000);
   </script>
 </body>
 </html>
