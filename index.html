@@ -17,14 +17,14 @@
     }
     .clock-overlay {
       position: fixed;
-      top: 12px;
-      right: 12px;
+      top: 1.2vmin;
+      right: 1.2vmin;
       z-index: 10;
       color: black;
       background: rgba(255, 255, 255, 0.75);
-      padding: 12px 14px;
-      border-radius: 6px;
-      font: 700 28px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: clamp(12px, 1.2vmin, 24px) clamp(14px, 1.5vmin, 30px);
+      border-radius: clamp(6px, 0.6vmin, 14px);
+      font: 700 clamp(36px, 4.2vw, 96px)/1.15 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0.02em;
       text-align: right;
     }
@@ -54,6 +54,15 @@
     const status = document.getElementById('status');
     const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
     let hls;
+    let streamClockMs = Date.now();
+    let lastVideoTimeSec = 0;
+    let streamClockInitialized = false;
+    const freezeReloadMs = 60000;
+    const startupGraceMs = 30000;
+    const pageStartedAtMs = Date.now();
+    let lastAdvanceAtMs = Date.now();
+    let lastObservedTimeSec = 0;
+    let freezeReloadArmed = false;
 
     function setStatus(message) {
       status.textContent = message;
@@ -64,7 +73,18 @@
     }
 
     function updateClock() {
-      const now = new Date();
+      if (Number.isFinite(video.currentTime)) {
+        if (!streamClockInitialized) {
+          streamClockInitialized = true;
+          lastVideoTimeSec = video.currentTime;
+        }
+
+        const deltaSec = Math.max(0, video.currentTime - lastVideoTimeSec);
+        streamClockMs += deltaSec * 1000;
+        lastVideoTimeSec = video.currentTime;
+      }
+
+      const now = new Date(streamClockMs);
       let formatted;
       try {
         formatted = now.toLocaleString(undefined, {
@@ -92,6 +112,14 @@
     updateClock();
     setInterval(updateClock, 1000);
 
+    video.addEventListener('playing', () => {
+      if (!streamClockInitialized) {
+        streamClockMs = Date.now();
+        lastVideoTimeSec = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        streamClockInitialized = true;
+      }
+    });
+
     function tryPlay() {
       const playPromise = video.play();
       if (playPromise && typeof playPromise.catch === 'function') {
@@ -108,6 +136,17 @@
 
     video.addEventListener('error', () => {
       setStatus('Video error code: ' + (video.error ? video.error.code : 'unknown'));
+    });
+
+    video.addEventListener('timeupdate', () => {
+      if (!Number.isFinite(video.currentTime)) {
+        return;
+      }
+      if (video.currentTime > lastObservedTimeSec + 0.05) {
+        lastObservedTimeSec = video.currentTime;
+        lastAdvanceAtMs = Date.now();
+        freezeReloadArmed = true;
+      }
     });
 
     function attachCommonRecovery() {
@@ -176,10 +215,25 @@
     }
 
     setInterval(() => {
+      const nowMs = Date.now();
+      if (
+        freezeReloadArmed &&
+        nowMs - pageStartedAtMs > startupGraceMs &&
+        Number.isFinite(video.currentTime) &&
+        !video.paused &&
+        !video.ended &&
+        video.readyState >= 2 &&
+        nowMs - lastAdvanceAtMs > freezeReloadMs
+      ) {
+        setStatus('Playback stalled. Reloading page...');
+        window.location.reload();
+        return;
+      }
+
       setStatus(
         'readyState=' + video.readyState +
         ' networkState=' + video.networkState +
-        ' time=' + (Number.isFinite(video.currentTime) ? video.currentTime.toFixed(1) : 'n/a')
+        ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's'
       );
     }, 4000);
   </script>
