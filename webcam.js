@@ -17,6 +17,70 @@ let stallWindowStartedAtMs = Date.now();
 let connectStartedAtMs = Date.now();
 let lastReconnectAtMs = 0;
 let mediaFatalRecoveryCount = 0;
+let lastDecodedFrameCount = -1;
+let decodedStallStartedAtMs = 0;
+let greenCorruptionStartedAtMs = 0;
+const greenCorruptionTriggerMs = 8000;
+let frameProbeCanvas;
+let frameProbeCtx;
+
+function getDecodedFrameCount() {
+  if (typeof video.getVideoPlaybackQuality === 'function') {
+    const quality = video.getVideoPlaybackQuality();
+    if (quality && Number.isFinite(quality.totalVideoFrames)) {
+      return quality.totalVideoFrames;
+    }
+  }
+
+  if (Number.isFinite(video.webkitDecodedFrameCount)) {
+    return video.webkitDecodedFrameCount;
+  }
+
+  if (Number.isFinite(video.mozDecodedFrames)) {
+    return video.mozDecodedFrames;
+  }
+
+  return -1;
+}
+
+function isLikelyGreenCorruption() {
+  if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
+    return false;
+  }
+
+  if (!frameProbeCanvas) {
+    frameProbeCanvas = document.createElement('canvas');
+    frameProbeCanvas.width = 64;
+    frameProbeCanvas.height = 36;
+    frameProbeCtx = frameProbeCanvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  if (!frameProbeCtx) {
+    return false;
+  }
+
+  try {
+    frameProbeCtx.drawImage(video, 0, 0, frameProbeCanvas.width, frameProbeCanvas.height);
+    const pixels = frameProbeCtx.getImageData(0, 0, frameProbeCanvas.width, frameProbeCanvas.height).data;
+    let greenDominantCount = 0;
+    const pixelCount = pixels.length / 4;
+
+    for (let i = 0; i < pixels.length; i += 4) {
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
+
+      if (g > 80 && g > r * 1.6 && g > b * 1.6) {
+        greenDominantCount += 1;
+      }
+    }
+
+    return greenDominantCount / pixelCount > 0.55;
+  } catch (_) {
+    // If frame sampling fails in a kiosk browser, skip corruption detection.
+    return false;
+  }
+}
 
 function resetStallWindowIfNeeded(nowMs) {
   if (nowMs - stallWindowStartedAtMs > 30000) {
@@ -141,6 +205,9 @@ function reconnectStream(reason) {
   stallWindowStartedAtMs = nowMs;
   connectStartedAtMs = nowMs;
   mediaFatalRecoveryCount = 0;
+  lastDecodedFrameCount = -1;
+  decodedStallStartedAtMs = 0;
+  greenCorruptionStartedAtMs = 0;
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -265,6 +332,39 @@ setInterval(() => {
   ) {
     reconnectStream('Playback stalled. Reconnecting stream...');
     return;
+  }
+
+  if (
+    freezeReloadArmed &&
+    !video.paused &&
+    !video.ended &&
+    video.readyState >= 2
+  ) {
+    const decodedFrameCount = getDecodedFrameCount();
+    if (decodedFrameCount >= 0) {
+      if (decodedFrameCount === lastDecodedFrameCount) {
+        if (decodedStallStartedAtMs === 0) {
+          decodedStallStartedAtMs = nowMs;
+        } else if (nowMs - decodedStallStartedAtMs > freezeReloadMs) {
+          reconnectStream('Decoded frames stuck. Reconnecting stream...');
+          return;
+        }
+      } else {
+        lastDecodedFrameCount = decodedFrameCount;
+        decodedStallStartedAtMs = 0;
+      }
+    }
+
+    if (isLikelyGreenCorruption()) {
+      if (greenCorruptionStartedAtMs === 0) {
+        greenCorruptionStartedAtMs = nowMs;
+      } else if (nowMs - greenCorruptionStartedAtMs > greenCorruptionTriggerMs) {
+        reconnectStream('Green frame corruption detected. Reconnecting stream...');
+        return;
+      }
+    } else {
+      greenCorruptionStartedAtMs = 0;
+    }
   }
 
   setStatus(
