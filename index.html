@@ -225,10 +225,19 @@
       const frame = document.getElementById('weatherGaugeFrame');
       const frameWrap = frame.parentElement;
       const note = document.getElementById('weatherFrameNote');
-      const baseUrl = 'https://weatherfile.com/kiosk/wind-kiosk.php?locationID=GBR00005&wsunits=kts';
+      const weatherLocationId = 'GBR00005';
+      const weatherUnits = 'kts';
       const baseWidth = 1920;
       const baseHeight = 1080;
       let loaded = false;
+
+      function buildWeatherUrl() {
+        const nextUrl = new URL('https://weatherfile.com/kiosk/wind-kiosk.php');
+        nextUrl.searchParams.set('locationID', weatherLocationId);
+        nextUrl.searchParams.set('wsunits', weatherUnits);
+        nextUrl.searchParams.set('_ts', String(Date.now()));
+        return nextUrl.toString();
+      }
 
       function fitWeatherFrame() {
         const wrapWidth = frameWrap.clientWidth;
@@ -254,11 +263,11 @@
       window.addEventListener('resize', fitWeatherFrame);
 
       function reloadWeatherFrame() {
-        const nextUrl = new URL(baseUrl);
-        nextUrl.searchParams.set('_ts', String(Date.now()));
-        frame.src = nextUrl.toString();
+        frame.src = buildWeatherUrl();
       }
 
+      // Force the exact same units/params on first paint and every refresh.
+      frame.src = buildWeatherUrl();
       fitWeatherFrame();
 
       // Refresh embedded weather page every 60 seconds.
