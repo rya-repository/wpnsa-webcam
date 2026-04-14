@@ -23,15 +23,75 @@
   <script>
     const video = document.getElementById('video');
     const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
+    let hls;
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({ liveDurationInfinity: true });
-      hls.loadSource(src);
+    function tryPlay() {
+      const playPromise = video.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+          // UC Cast/kiosk browsers can temporarily reject autoplay; retry shortly.
+          setTimeout(() => video.play().catch(() => {}), 1000);
+        });
+      }
+    }
+
+    function attachCommonRecovery() {
+      video.addEventListener('stalled', () => {
+        if (hls && Number.isFinite(video.currentTime)) {
+          hls.startLoad();
+          video.currentTime = Math.max(0, video.currentTime - 0.1);
+          tryPlay();
+        }
+      });
+
+      video.addEventListener('pause', () => {
+        // Keep playback alive for unattended display playback.
+        if (!video.ended) {
+          tryPlay();
+        }
+      });
+    }
+
+    if (window.Hls && Hls.isSupported()) {
+      hls = new Hls({
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 10,
+        maxLiveSyncPlaybackRate: 1.2,
+        backBufferLength: 30,
+        maxBufferLength: 20,
+        lowLatencyMode: false
+      });
+
       hls.attachMedia(video);
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls.loadSource(src);
+      });
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        tryPlay();
+      });
+
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (!data.fatal) {
+          return;
+        }
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+        } else {
+          hls.destroy();
+          setTimeout(() => window.location.reload(), 1500);
+        }
+      });
+
+      attachCommonRecovery();
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src;
+      video.addEventListener('loadedmetadata', tryPlay);
+      attachCommonRecovery();
     }
   </script>
 </body>
 </html>
-``
