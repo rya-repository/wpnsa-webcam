@@ -2,12 +2,16 @@ const video = document.getElementById('video');
 const status = document.getElementById('status');
 const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
 let hls;
-const hardReloadMs = 10 * 60 * 1000;
-const freezeReloadMs = 60000;
+const hardReloadMs = 3 * 60 * 1000;
+const freezeReloadMs = 30000;
 const startupGraceMs = 30000;
 const stuckStartupReloadMs = 25000;
 const minReconnectGapMs = 5000;
 const frameSignatureFreezeMs = 45000;
+const stallWindowMs = 12000;
+const stallReconnectThreshold = 2;
+const bufferStallBurstWindowMs = 10000;
+const bufferStallReconnectThreshold = 2;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -23,7 +27,9 @@ let decodedStallStartedAtMs = 0;
 let lastFrameSignature = '';
 let frameSignatureStallStartedAtMs = 0;
 let greenCorruptionStartedAtMs = 0;
-const greenCorruptionTriggerMs = 8000;
+const greenCorruptionTriggerMs = 5000;
+let bufferStallBurstCount = 0;
+let lastBufferStallAtMs = 0;
 let frameProbeCanvas;
 let frameProbeCtx;
 
@@ -120,7 +126,7 @@ function isLikelyGreenCorruption() {
 }
 
 function resetStallWindowIfNeeded(nowMs) {
-  if (nowMs - stallWindowStartedAtMs > 30000) {
+  if (nowMs - stallWindowStartedAtMs > stallWindowMs) {
     stallWindowStartedAtMs = nowMs;
     recentStallCount = 0;
   }
@@ -131,7 +137,7 @@ function markStallAndMaybeReconnect(reason) {
   resetStallWindowIfNeeded(nowMs);
   recentStallCount += 1;
 
-  if (recentStallCount >= 4) {
+  if (recentStallCount >= stallReconnectThreshold) {
     reconnectStream(reason || 'Repeated stalls detected. Reconnecting stream...');
     return true;
   }
@@ -247,6 +253,8 @@ function reconnectStream(reason) {
   lastFrameSignature = '';
   frameSignatureStallStartedAtMs = 0;
   greenCorruptionStartedAtMs = 0;
+  bufferStallBurstCount = 0;
+  lastBufferStallAtMs = 0;
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -298,6 +306,18 @@ function connectStream() {
       setStatus('HLS error: ' + data.type + ' / ' + data.details + (data.fatal ? ' (fatal)' : ''));
       if (!data.fatal) {
         if (data.details === 'bufferStalledError' || data.details === 'bufferNudgeOnStall') {
+          const nowMs = Date.now();
+          if (nowMs - lastBufferStallAtMs > bufferStallBurstWindowMs) {
+            bufferStallBurstCount = 0;
+          }
+          lastBufferStallAtMs = nowMs;
+          bufferStallBurstCount += 1;
+
+          if (bufferStallBurstCount >= bufferStallReconnectThreshold) {
+            reconnectStream('Buffer stalled repeatedly. Reconnecting stream...');
+            return;
+          }
+
           if (markStallAndMaybeReconnect('Repeated buffer stall. Reconnecting stream...')) {
             return;
           }
