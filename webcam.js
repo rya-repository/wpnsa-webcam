@@ -431,6 +431,10 @@ function connectStream() {
 
 connectStream();
 setInterval(() => {
+  window.location.reload();
+}, 60000);
+
+setInterval(() => {
   reconnectStream('Scheduled stream reconnect...');
 }, hardReloadMs);
 
