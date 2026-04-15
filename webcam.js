@@ -33,15 +33,12 @@ let greenCorruptionStartedAtMs = 0;
 const greenCorruptionTriggerMs = 6000;
 let bufferStallBurstCount = 0;
 let lastBufferStallAtMs = 0;
-let lastHealthSignalAtMs = Date.now();
+let hasSuccessfulFrame = false;
+let lastSuccessfulFrameAtMs = 0;
 let reconnectTimerId = 0;
 let reconnectPendingReason = '';
 let frameProbeCanvas;
 let frameProbeCtx;
-
-function markHealthyNow() {
-  lastHealthSignalAtMs = Date.now();
-}
 
 function clearReconnectTimer() {
   if (reconnectTimerId) {
@@ -196,7 +193,6 @@ function catchUpToLiveEdge() {
   }
 
   video.currentTime = Math.max(0, liveSyncPos - liveCatchupOffsetSec);
-  markHealthyNow();
   return true;
 }
 
@@ -229,14 +225,13 @@ video.addEventListener('timeupdate', () => {
     return;
   }
   if (video.currentTime > lastObservedTimeSec + 0.05) {
-    markHealthyNow();
+    hasSuccessfulFrame = true;
+    lastSuccessfulFrameAtMs = Date.now();
     lastObservedTimeSec = video.currentTime;
     lastAdvanceAtMs = Date.now();
     freezeReloadArmed = true;
   }
 });
-
-video.addEventListener('playing', markHealthyNow);
 
 function attachCommonRecovery() {
   if (commonRecoveryBound) {
@@ -314,7 +309,6 @@ function reconnectStream(reason) {
   greenCorruptionStartedAtMs = 0;
   bufferStallBurstCount = 0;
   lastBufferStallAtMs = 0;
-  lastHealthSignalAtMs = nowMs;
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -324,7 +318,6 @@ function reconnectStream(reason) {
 
 function connectStream() {
   connectStartedAtMs = Date.now();
-  lastHealthSignalAtMs = connectStartedAtMs;
 
   if (window.Hls && Hls.isSupported()) {
     setStatus('HLS.js supported. Connecting stream...');
@@ -357,7 +350,6 @@ function connectStream() {
       if (hls !== nextHls) {
         return;
       }
-      markHealthyNow();
       mediaFatalRecoveryCount = 0;
       setStatus('Manifest parsed. Playing...');
       tryPlay();
@@ -445,13 +437,21 @@ setInterval(() => {
 setInterval(() => {
   const nowMs = Date.now();
 
-  if (
+  if (!hasSuccessfulFrame) {
+    if (
+      nowMs - pageStartedAtMs > startupGraceMs &&
+      nowMs - connectStartedAtMs > stuckStartupReloadMs &&
+      !video.ended
+    ) {
+      reconnectStream('No successful frame since reconnect. Reconnecting stream...');
+      return;
+    }
+  } else if (
     nowMs - pageStartedAtMs > startupGraceMs &&
-    nowMs - connectStartedAtMs > recoveryTargetMs &&
-    nowMs - lastHealthSignalAtMs > recoveryTargetMs &&
+    nowMs - lastSuccessfulFrameAtMs > recoveryTargetMs &&
     !video.ended
   ) {
-    reconnectStream('No health signal for 10s. Reconnecting stream...');
+    reconnectStream('No successful frames for 10s. Reconnecting stream...');
     return;
   }
 
@@ -529,11 +529,15 @@ setInterval(() => {
     catchUpToLiveEdge();
   }
 
+  const unhealthyForMs = hasSuccessfulFrame
+    ? nowMs - lastSuccessfulFrameAtMs
+    : nowMs - connectStartedAtMs;
+
   setStatus(
     'readyState=' + video.readyState +
     ' networkState=' + video.networkState +
     ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's' +
-    ' unhealthyFor=' + Math.floor((nowMs - lastHealthSignalAtMs) / 1000) + 's' +
+    ' unhealthyFor=' + Math.floor(unhealthyForMs / 1000) + 's' +
     (reconnectTimerId ? ' reconnectQueued=1' : ' reconnectQueued=0')
   );
 }, 2000);
