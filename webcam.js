@@ -13,6 +13,8 @@ const stallWindowMs = 8000;
 const stallReconnectThreshold = 2;
 const bufferStallBurstWindowMs = 6000;
 const bufferStallReconnectThreshold = 2;
+const liveCatchupLagSec = 2.5;
+const liveCatchupOffsetSec = 0.2;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -178,6 +180,26 @@ function setStatus(message) {
   status.textContent = message;
 }
 
+function catchUpToLiveEdge() {
+  if (!hls || !Number.isFinite(video.currentTime) || video.readyState < 2) {
+    return false;
+  }
+
+  const liveSyncPos = hls.liveSyncPosition;
+  if (!Number.isFinite(liveSyncPos)) {
+    return false;
+  }
+
+  const lagSec = liveSyncPos - video.currentTime;
+  if (lagSec <= liveCatchupLagSec) {
+    return false;
+  }
+
+  video.currentTime = Math.max(0, liveSyncPos - liveCatchupOffsetSec);
+  markHealthyNow();
+  return true;
+}
+
 function tryPlay() {
   const playPromise = video.play();
   if (playPromise && typeof playPromise.catch === 'function') {
@@ -308,10 +330,12 @@ function connectStream() {
     setStatus('HLS.js supported. Connecting stream...');
     const nextHls = new Hls({
       enableWorker: false,
+      startPosition: -1,
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 10,
       maxLiveSyncPlaybackRate: 1.2,
-      backBufferLength: 10,
+      backBufferLength: 0,
+      liveBackBufferLength: 0,
       maxBufferLength: 8,
       maxBufferHole: 0.5,
       nudgeOffset: 0.1,
@@ -337,6 +361,18 @@ function connectStream() {
       mediaFatalRecoveryCount = 0;
       setStatus('Manifest parsed. Playing...');
       tryPlay();
+      setTimeout(() => {
+        if (hls === nextHls) {
+          catchUpToLiveEdge();
+        }
+      }, 400);
+    });
+
+    nextHls.on(Hls.Events.LEVEL_UPDATED, () => {
+      if (hls !== nextHls) {
+        return;
+      }
+      catchUpToLiveEdge();
     });
 
     nextHls.on(Hls.Events.ERROR, (_, data) => {
@@ -362,7 +398,7 @@ function connectStream() {
             return;
           }
 
-          if (Number.isFinite(video.currentTime)) {
+          if (!catchUpToLiveEdge() && Number.isFinite(video.currentTime)) {
             video.currentTime = Math.max(0, video.currentTime - 0.05);
           }
           nextHls.startLoad();
@@ -489,6 +525,8 @@ setInterval(() => {
     } else {
       greenCorruptionStartedAtMs = 0;
     }
+
+    catchUpToLiveEdge();
   }
 
   setStatus(
