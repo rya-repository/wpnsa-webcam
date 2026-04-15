@@ -3,15 +3,16 @@ const status = document.getElementById('status');
 const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
 let hls;
 const hardReloadMs = 3 * 60 * 1000;
-const freezeReloadMs = 30000;
-const startupGraceMs = 30000;
-const stuckStartupReloadMs = 25000;
-const minReconnectGapMs = 5000;
-const frameSignatureFreezeMs = 45000;
-const stallWindowMs = 12000;
-const stallReconnectThreshold = 2;
-const bufferStallBurstWindowMs = 10000;
-const bufferStallReconnectThreshold = 2;
+const recoveryTargetMs = 10000;
+const freezeReloadMs = recoveryTargetMs;
+const startupGraceMs = 5000;
+const stuckStartupReloadMs = recoveryTargetMs;
+const minReconnectGapMs = 2000;
+const frameSignatureFreezeMs = recoveryTargetMs;
+const stallWindowMs = 6000;
+const stallReconnectThreshold = 1;
+const bufferStallBurstWindowMs = 4000;
+const bufferStallReconnectThreshold = 1;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -27,11 +28,16 @@ let decodedStallStartedAtMs = 0;
 let lastFrameSignature = '';
 let frameSignatureStallStartedAtMs = 0;
 let greenCorruptionStartedAtMs = 0;
-const greenCorruptionTriggerMs = 5000;
+const greenCorruptionTriggerMs = 3000;
 let bufferStallBurstCount = 0;
 let lastBufferStallAtMs = 0;
+let lastHealthSignalAtMs = Date.now();
 let frameProbeCanvas;
 let frameProbeCtx;
+
+function markHealthyNow() {
+  lastHealthSignalAtMs = Date.now();
+}
 
 function getFrameSignature() {
   if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
@@ -178,11 +184,16 @@ video.addEventListener('timeupdate', () => {
     return;
   }
   if (video.currentTime > lastObservedTimeSec + 0.05) {
+    markHealthyNow();
     lastObservedTimeSec = video.currentTime;
     lastAdvanceAtMs = Date.now();
     freezeReloadArmed = true;
   }
 });
+
+video.addEventListener('loadeddata', markHealthyNow);
+video.addEventListener('canplay', markHealthyNow);
+video.addEventListener('playing', markHealthyNow);
 
 function attachCommonRecovery() {
   if (commonRecoveryBound) {
@@ -255,6 +266,7 @@ function reconnectStream(reason) {
   greenCorruptionStartedAtMs = 0;
   bufferStallBurstCount = 0;
   lastBufferStallAtMs = 0;
+  lastHealthSignalAtMs = nowMs;
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -264,6 +276,7 @@ function reconnectStream(reason) {
 
 function connectStream() {
   connectStartedAtMs = Date.now();
+  lastHealthSignalAtMs = connectStartedAtMs;
 
   if (window.Hls && Hls.isSupported()) {
     setStatus('HLS.js supported. Connecting stream...');
@@ -294,6 +307,7 @@ function connectStream() {
       if (hls !== nextHls) {
         return;
       }
+      markHealthyNow();
       mediaFatalRecoveryCount = 0;
       setStatus('Manifest parsed. Playing...');
       tryPlay();
@@ -371,6 +385,16 @@ setInterval(() => {
 
   if (
     nowMs - pageStartedAtMs > startupGraceMs &&
+    nowMs - connectStartedAtMs > recoveryTargetMs &&
+    nowMs - lastHealthSignalAtMs > recoveryTargetMs &&
+    !video.ended
+  ) {
+    reconnectStream('No health signal for 10s. Reconnecting stream...');
+    return;
+  }
+
+  if (
+    nowMs - pageStartedAtMs > startupGraceMs &&
     !freezeReloadArmed &&
     video.readyState <= 1 &&
     (video.networkState === 1 || video.networkState === 2) &&
@@ -444,6 +468,7 @@ setInterval(() => {
   setStatus(
     'readyState=' + video.readyState +
     ' networkState=' + video.networkState +
-    ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's'
+    ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's' +
+    ' unhealthyFor=' + Math.floor((nowMs - lastHealthSignalAtMs) / 1000) + 's'
   );
-}, 4000);
+}, 1000);
