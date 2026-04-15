@@ -4,15 +4,15 @@ const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
 let hls;
 const hardReloadMs = 3 * 60 * 1000;
 const recoveryTargetMs = 10000;
-const freezeReloadMs = recoveryTargetMs;
-const startupGraceMs = 5000;
-const stuckStartupReloadMs = recoveryTargetMs;
-const minReconnectGapMs = 2000;
-const frameSignatureFreezeMs = recoveryTargetMs;
-const stallWindowMs = 6000;
-const stallReconnectThreshold = 1;
-const bufferStallBurstWindowMs = 4000;
-const bufferStallReconnectThreshold = 1;
+const freezeReloadMs = 15000;
+const startupGraceMs = 8000;
+const stuckStartupReloadMs = 15000;
+const minReconnectGapMs = 7000;
+const frameSignatureFreezeMs = 20000;
+const stallWindowMs = 8000;
+const stallReconnectThreshold = 2;
+const bufferStallBurstWindowMs = 6000;
+const bufferStallReconnectThreshold = 2;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -28,7 +28,7 @@ let decodedStallStartedAtMs = 0;
 let lastFrameSignature = '';
 let frameSignatureStallStartedAtMs = 0;
 let greenCorruptionStartedAtMs = 0;
-const greenCorruptionTriggerMs = 3000;
+const greenCorruptionTriggerMs = 6000;
 let bufferStallBurstCount = 0;
 let lastBufferStallAtMs = 0;
 let lastHealthSignalAtMs = Date.now();
@@ -326,7 +326,6 @@ function connectStream() {
         return;
       }
       setStatus('Media attached. Loading manifest...');
-      markHealthyNow();
       nextHls.loadSource(src);
     });
 
@@ -499,4 +498,4 @@ setInterval(() => {
     ' unhealthyFor=' + Math.floor((nowMs - lastHealthSignalAtMs) / 1000) + 's' +
     (reconnectTimerId ? ' reconnectQueued=1' : ' reconnectQueued=0')
   );
-}, 1000);
+}, 2000);
