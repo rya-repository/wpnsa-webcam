@@ -32,11 +32,34 @@ const greenCorruptionTriggerMs = 3000;
 let bufferStallBurstCount = 0;
 let lastBufferStallAtMs = 0;
 let lastHealthSignalAtMs = Date.now();
+let reconnectTimerId = 0;
+let reconnectPendingReason = '';
 let frameProbeCanvas;
 let frameProbeCtx;
 
 function markHealthyNow() {
   lastHealthSignalAtMs = Date.now();
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimerId) {
+    clearTimeout(reconnectTimerId);
+    reconnectTimerId = 0;
+  }
+}
+
+function scheduleReconnect(reason, delayMs) {
+  reconnectPendingReason = reason || reconnectPendingReason || 'Reconnecting stream...';
+  if (reconnectTimerId) {
+    return;
+  }
+
+  reconnectTimerId = setTimeout(() => {
+    reconnectTimerId = 0;
+    const pendingReason = reconnectPendingReason;
+    reconnectPendingReason = '';
+    reconnectStream(pendingReason || 'Reconnecting stream...');
+  }, Math.max(0, delayMs));
 }
 
 function getFrameSignature() {
@@ -191,8 +214,6 @@ video.addEventListener('timeupdate', () => {
   }
 });
 
-video.addEventListener('loadeddata', markHealthyNow);
-video.addEventListener('canplay', markHealthyNow);
 video.addEventListener('playing', markHealthyNow);
 
 function attachCommonRecovery() {
@@ -245,10 +266,15 @@ function destroyHlsInstance() {
 
 function reconnectStream(reason) {
   const nowMs = Date.now();
-  if (nowMs - lastReconnectAtMs < minReconnectGapMs) {
-    setStatus('Reconnect cooldown active...');
+  const msSinceReconnect = nowMs - lastReconnectAtMs;
+  if (msSinceReconnect < minReconnectGapMs) {
+    const waitMs = minReconnectGapMs - msSinceReconnect;
+    setStatus('Reconnect cooldown active (' + Math.ceil(waitMs / 1000) + 's), retry queued...');
+    scheduleReconnect(reason || 'Reconnect queued after cooldown...', waitMs + 50);
     return;
   }
+  clearReconnectTimer();
+  reconnectPendingReason = '';
   lastReconnectAtMs = nowMs;
 
   setStatus(reason || 'Reconnecting stream...');
@@ -300,6 +326,7 @@ function connectStream() {
         return;
       }
       setStatus('Media attached. Loading manifest...');
+      markHealthyNow();
       nextHls.loadSource(src);
     });
 
@@ -469,6 +496,7 @@ setInterval(() => {
     'readyState=' + video.readyState +
     ' networkState=' + video.networkState +
     ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's' +
-    ' unhealthyFor=' + Math.floor((nowMs - lastHealthSignalAtMs) / 1000) + 's'
+    ' unhealthyFor=' + Math.floor((nowMs - lastHealthSignalAtMs) / 1000) + 's' +
+    (reconnectTimerId ? ' reconnectQueued=1' : ' reconnectQueued=0')
   );
 }, 1000);
