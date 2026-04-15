@@ -7,6 +7,7 @@ const freezeReloadMs = 60000;
 const startupGraceMs = 30000;
 const stuckStartupReloadMs = 25000;
 const minReconnectGapMs = 5000;
+const frameSignatureFreezeMs = 45000;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -19,10 +20,46 @@ let lastReconnectAtMs = 0;
 let mediaFatalRecoveryCount = 0;
 let lastDecodedFrameCount = -1;
 let decodedStallStartedAtMs = 0;
+let lastFrameSignature = '';
+let frameSignatureStallStartedAtMs = 0;
 let greenCorruptionStartedAtMs = 0;
 const greenCorruptionTriggerMs = 8000;
 let frameProbeCanvas;
 let frameProbeCtx;
+
+function getFrameSignature() {
+  if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
+    return '';
+  }
+
+  if (!frameProbeCanvas) {
+    frameProbeCanvas = document.createElement('canvas');
+    frameProbeCanvas.width = 64;
+    frameProbeCanvas.height = 36;
+    frameProbeCtx = frameProbeCanvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  if (!frameProbeCtx) {
+    return '';
+  }
+
+  try {
+    frameProbeCtx.drawImage(video, 0, 0, frameProbeCanvas.width, frameProbeCanvas.height);
+    const pixels = frameProbeCtx.getImageData(0, 0, frameProbeCanvas.width, frameProbeCanvas.height).data;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    // Sample every 16th pixel to keep this lightweight on kiosk browsers.
+    for (let i = 0; i < pixels.length; i += 64) {
+      r += pixels[i];
+      g += pixels[i + 1];
+      b += pixels[i + 2];
+    }
+    return r + '|' + g + '|' + b;
+  } catch (_) {
+    return '';
+  }
+}
 
 function getDecodedFrameCount() {
   if (typeof video.getVideoPlaybackQuality === 'function') {
@@ -207,6 +244,8 @@ function reconnectStream(reason) {
   mediaFatalRecoveryCount = 0;
   lastDecodedFrameCount = -1;
   decodedStallStartedAtMs = 0;
+  lastFrameSignature = '';
+  frameSignatureStallStartedAtMs = 0;
   greenCorruptionStartedAtMs = 0;
   destroyHlsInstance();
   video.pause();
@@ -352,6 +391,21 @@ setInterval(() => {
       } else {
         lastDecodedFrameCount = decodedFrameCount;
         decodedStallStartedAtMs = 0;
+      }
+    }
+
+    const frameSignature = getFrameSignature();
+    if (frameSignature) {
+      if (frameSignature === lastFrameSignature) {
+        if (frameSignatureStallStartedAtMs === 0) {
+          frameSignatureStallStartedAtMs = nowMs;
+        } else if (nowMs - frameSignatureStallStartedAtMs > frameSignatureFreezeMs) {
+          reconnectStream('Displayed frame unchanged too long. Reconnecting stream...');
+          return;
+        }
+      } else {
+        lastFrameSignature = frameSignature;
+        frameSignatureStallStartedAtMs = 0;
       }
     }
 
