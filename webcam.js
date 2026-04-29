@@ -15,6 +15,8 @@ const bufferStallBurstWindowMs = 6000;
 const bufferStallReconnectThreshold = 2;
 const liveCatchupLagSec = 2.5;
 const liveCatchupOffsetSec = 0.2;
+const modeSwitchAfterFailedReconnects = 3;
+const hardReloadAfterModeSwitches = 3;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -33,22 +35,41 @@ let greenCorruptionStartedAtMs = 0;
 const greenCorruptionTriggerMs = 6000;
 let bufferStallBurstCount = 0;
 let lastBufferStallAtMs = 0;
-let hasSuccessfulFrame = false;
+let hasSuccessfulFrameSinceConnect = false;
 let lastSuccessfulFrameAtMs = 0;
+let reconnectAttemptsSinceSuccess = 0;
+let modeSwitchCount = 0;
+let preferNativeMode = false;
 let reconnectTimerId = 0;
 let reconnectPendingReason = '';
+let reconnectQueueCount = 0;
+let reconnectQueuedSinceAtMs = 0;
 let frameProbeCanvas;
 let frameProbeCtx;
+
+function hardReloadPage(reason) {
+  setStatus(reason || 'Hard reloading page...');
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set('_hard', String(Date.now()));
+  window.location.replace(nextUrl.toString());
+}
 
 function clearReconnectTimer() {
   if (reconnectTimerId) {
     clearTimeout(reconnectTimerId);
     reconnectTimerId = 0;
   }
+  reconnectQueueCount = 0;
+  reconnectQueuedSinceAtMs = 0;
 }
 
 function scheduleReconnect(reason, delayMs) {
   reconnectPendingReason = reason || reconnectPendingReason || 'Reconnecting stream...';
+  reconnectQueueCount += 1;
+  if (!reconnectQueuedSinceAtMs) {
+    reconnectQueuedSinceAtMs = Date.now();
+  }
+
   if (reconnectTimerId) {
     return;
   }
@@ -225,8 +246,10 @@ video.addEventListener('timeupdate', () => {
     return;
   }
   if (video.currentTime > lastObservedTimeSec + 0.05) {
-    hasSuccessfulFrame = true;
+    hasSuccessfulFrameSinceConnect = true;
     lastSuccessfulFrameAtMs = Date.now();
+    reconnectAttemptsSinceSuccess = 0;
+    modeSwitchCount = 0;
     lastObservedTimeSec = video.currentTime;
     lastAdvanceAtMs = Date.now();
     freezeReloadArmed = true;
@@ -286,13 +309,27 @@ function reconnectStream(reason) {
   const msSinceReconnect = nowMs - lastReconnectAtMs;
   if (msSinceReconnect < minReconnectGapMs) {
     const waitMs = minReconnectGapMs - msSinceReconnect;
-    setStatus('Reconnect cooldown active (' + Math.ceil(waitMs / 1000) + 's), retry queued...');
+    setStatus('Reconnect cooldown active (' + Math.ceil(waitMs / 1000) + 's), retry queued x' + (reconnectQueueCount + 1) + '...');
     scheduleReconnect(reason || 'Reconnect queued after cooldown...', waitMs + 50);
     return;
   }
   clearReconnectTimer();
   reconnectPendingReason = '';
   lastReconnectAtMs = nowMs;
+
+  if (!hasSuccessfulFrameSinceConnect && nowMs - connectStartedAtMs > startupGraceMs) {
+    reconnectAttemptsSinceSuccess += 1;
+    if (reconnectAttemptsSinceSuccess >= modeSwitchAfterFailedReconnects) {
+      reconnectAttemptsSinceSuccess = 0;
+      preferNativeMode = !preferNativeMode;
+      modeSwitchCount += 1;
+
+      if (modeSwitchCount >= hardReloadAfterModeSwitches) {
+        hardReloadPage('Escalating recovery after repeated failures...');
+        return;
+      }
+    }
+  }
 
   setStatus(reason || 'Reconnecting stream...');
   freezeReloadArmed = false;
@@ -309,6 +346,7 @@ function reconnectStream(reason) {
   greenCorruptionStartedAtMs = 0;
   bufferStallBurstCount = 0;
   lastBufferStallAtMs = 0;
+  hasSuccessfulFrameSinceConnect = false;
   destroyHlsInstance();
   video.pause();
   video.removeAttribute('src');
@@ -318,6 +356,16 @@ function reconnectStream(reason) {
 
 function connectStream() {
   connectStartedAtMs = Date.now();
+
+  const nativeHlsSupported = !!video.canPlayType('application/vnd.apple.mpegurl');
+  if (preferNativeMode && nativeHlsSupported) {
+    setStatus('Native HLS mode. Loading stream...');
+    video.onloadedmetadata = tryPlay;
+    video.src = src;
+    video.load();
+    attachCommonRecovery();
+    return;
+  }
 
   if (window.Hls && Hls.isSupported()) {
     setStatus('HLS.js supported. Connecting stream...');
@@ -417,7 +465,7 @@ function connectStream() {
     return;
   }
 
-  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+  if (nativeHlsSupported) {
     setStatus('Native HLS detected. Loading stream...');
     video.onloadedmetadata = tryPlay;
     video.src = src;
@@ -441,7 +489,7 @@ setInterval(() => {
 setInterval(() => {
   const nowMs = Date.now();
 
-  if (!hasSuccessfulFrame) {
+  if (!hasSuccessfulFrameSinceConnect) {
     if (
       nowMs - pageStartedAtMs > startupGraceMs &&
       nowMs - connectStartedAtMs > stuckStartupReloadMs &&
@@ -533,15 +581,25 @@ setInterval(() => {
     catchUpToLiveEdge();
   }
 
-  const unhealthyForMs = hasSuccessfulFrame
+  const unhealthyForMs = hasSuccessfulFrameSinceConnect
     ? nowMs - lastSuccessfulFrameAtMs
     : nowMs - connectStartedAtMs;
+  const stalledForMs = hasSuccessfulFrameSinceConnect
+    ? nowMs - lastSuccessfulFrameAtMs
+    : nowMs - connectStartedAtMs;
+  const queuedForMs = reconnectQueuedSinceAtMs
+    ? nowMs - reconnectQueuedSinceAtMs
+    : 0;
+  const modeText = preferNativeMode ? 'native' : 'hlsjs';
 
   setStatus(
     'readyState=' + video.readyState +
     ' networkState=' + video.networkState +
-    ' stalledFor=' + Math.floor((nowMs - lastAdvanceAtMs) / 1000) + 's' +
+    ' stalledFor=' + Math.floor(stalledForMs / 1000) + 's' +
     ' unhealthyFor=' + Math.floor(unhealthyForMs / 1000) + 's' +
-    (reconnectTimerId ? ' reconnectQueued=1' : ' reconnectQueued=0')
+    ' mode=' + modeText +
+    (reconnectTimerId ? ' reconnectQueued=1' : ' reconnectQueued=0') +
+    ' queueCount=' + reconnectQueueCount +
+    ' queuedFor=' + Math.floor(queuedForMs / 1000) + 's'
   );
 }, 2000);
