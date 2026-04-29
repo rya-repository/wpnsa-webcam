@@ -15,8 +15,8 @@ const bufferStallBurstWindowMs = 6000;
 const bufferStallReconnectThreshold = 2;
 const liveCatchupLagSec = 2.5;
 const liveCatchupOffsetSec = 0.2;
-const modeSwitchAfterFailedReconnects = 3;
-const hardReloadAfterModeSwitches = 3;
+const modeSwitchAfterFailedReconnects = 2;
+const hardReloadAfterModeSwitches = 2;
 const pageStartedAtMs = Date.now();
 let lastAdvanceAtMs = Date.now();
 let lastObservedTimeSec = 0;
@@ -51,7 +51,9 @@ function hardReloadPage(reason) {
   setStatus(reason || 'Hard reloading page...');
   const nextUrl = new URL(window.location.href);
   nextUrl.searchParams.set('_hard', String(Date.now()));
-  window.location.replace(nextUrl.toString());
+  const recoverUrl = new URL('recover.html', window.location.href);
+  recoverUrl.searchParams.set('return', nextUrl.toString());
+  window.location.replace(recoverUrl.toString());
 }
 
 function clearReconnectTimer() {
@@ -496,6 +498,16 @@ setInterval(() => {
       !video.ended
     ) {
       reconnectStream('No successful frame since reconnect. Reconnecting stream...');
+      return;
+    }
+
+    if (
+      nowMs - pageStartedAtMs > startupGraceMs &&
+      reconnectAttemptsSinceSuccess >= 4 &&
+      nowMs - connectStartedAtMs > 30000 &&
+      !video.ended
+    ) {
+      hardReloadPage('Escalating to deep browser reset...');
       return;
     }
   } else if (

@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recovering Stream...</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      color: #fff;
+      font: 500 15px/1.4 "Segoe UI", sans-serif;
+      display: grid;
+      place-items: center;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <div>Recovering webcam stream...</div>
+    <div style="opacity:0.75; margin-top:8px; font-size:13px;">Resetting browser media state</div>
+  </div>
+  <script>
+    (function recoverAndReturn() {
+      const params = new URLSearchParams(window.location.search);
+      const returnUrl = params.get('return') || 'index.html';
+      setTimeout(() => {
+        window.location.replace(returnUrl);
+      }, 1200);
+    })();
+  </script>
+</body>
+</html>
