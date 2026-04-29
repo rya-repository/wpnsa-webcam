@@ -1,6 +1,15 @@
 const video = document.getElementById('video');
 const status = document.getElementById('status');
-const src = 'https://camsecure.co/HLS/weymouthsailing.m3u8';
+const streamSources = [
+  'https://camsecure.co/HLS/weymouthsailing.m3u8'
+  // Add alternate stream URLs here if available for automatic failover.
+  // Example: 'https://backup.example.com/HLS/weymouthsailing.m3u8'
+];
+const snapshotCandidates = [
+  'https://camsecure.co/snapshot/weymouthsailing.jpg',
+  'https://camsecure.co/Snapshot/weymouthsailing.jpg',
+  'https://camsecure.co/JPEG/weymouthsailing.jpg'
+];
 let hls;
 const hardReloadMs = 3 * 60 * 1000;
 const recoveryTargetMs = 10000;
@@ -44,6 +53,10 @@ let reconnectTimerId = 0;
 let reconnectPendingReason = '';
 let reconnectQueueCount = 0;
 let reconnectQueuedSinceAtMs = 0;
+let currentStreamIndex = 0;
+let snapshotModeActive = false;
+let snapshotProbeInFlight = false;
+let snapshotImg = null;
 let frameProbeCanvas;
 let frameProbeCtx;
 
@@ -54,6 +67,104 @@ function hardReloadPage(reason) {
   const recoverUrl = new URL('recover.html', window.location.href);
   recoverUrl.searchParams.set('return', nextUrl.toString());
   window.location.replace(recoverUrl.toString());
+}
+
+function getCurrentStreamUrl() {
+  return streamSources[currentStreamIndex] || streamSources[0];
+}
+
+function advanceStreamSource() {
+  if (streamSources.length <= 1) {
+    return false;
+  }
+  currentStreamIndex = (currentStreamIndex + 1) % streamSources.length;
+  return true;
+}
+
+function ensureSnapshotElement() {
+  if (snapshotImg) {
+    return snapshotImg;
+  }
+
+  const parent = video.parentElement;
+  if (!parent) {
+    return null;
+  }
+
+  snapshotImg = document.createElement('img');
+  snapshotImg.alt = 'Webcam snapshot fallback';
+  snapshotImg.style.position = 'absolute';
+  snapshotImg.style.inset = '0';
+  snapshotImg.style.width = '100%';
+  snapshotImg.style.height = '100%';
+  snapshotImg.style.objectFit = 'contain';
+  snapshotImg.style.background = '#000';
+  snapshotImg.style.display = 'none';
+  snapshotImg.style.zIndex = '3';
+  parent.appendChild(snapshotImg);
+  return snapshotImg;
+}
+
+function hideSnapshotFallback() {
+  snapshotModeActive = false;
+  if (snapshotImg) {
+    snapshotImg.style.display = 'none';
+  }
+}
+
+function testSnapshotCandidate(url, timeoutMs) {
+  return new Promise((resolve) => {
+    const testImage = new Image();
+    let settled = false;
+    const done = (ok, finalUrl) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve({ ok, url: finalUrl });
+    };
+
+    const timer = setTimeout(() => done(false, url), timeoutMs);
+    testImage.onload = () => {
+      clearTimeout(timer);
+      done(true, url);
+    };
+    testImage.onerror = () => {
+      clearTimeout(timer);
+      done(false, url);
+    };
+    testImage.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_ts=' + Date.now();
+  });
+}
+
+async function showSnapshotFallback(reason) {
+  if (snapshotProbeInFlight) {
+    return;
+  }
+  snapshotProbeInFlight = true;
+
+  try {
+    const target = ensureSnapshotElement();
+    if (!target) {
+      return;
+    }
+
+    for (let i = 0; i < snapshotCandidates.length; i += 1) {
+      const candidate = snapshotCandidates[i];
+      const result = await testSnapshotCandidate(candidate, 2500);
+      if (!result.ok) {
+        continue;
+      }
+
+      target.src = result.url + (result.url.indexOf('?') >= 0 ? '&' : '?') + '_ts=' + Date.now();
+      target.style.display = 'block';
+      snapshotModeActive = true;
+      setStatus((reason || 'Video unavailable.') + ' Showing snapshot fallback...');
+      return;
+    }
+  } finally {
+    snapshotProbeInFlight = false;
+  }
 }
 
 function clearReconnectTimer() {
@@ -248,6 +359,7 @@ video.addEventListener('timeupdate', () => {
     return;
   }
   if (video.currentTime > lastObservedTimeSec + 0.05) {
+    hideSnapshotFallback();
     hasSuccessfulFrameSinceConnect = true;
     lastSuccessfulFrameAtMs = Date.now();
     reconnectAttemptsSinceSuccess = 0;
@@ -321,6 +433,15 @@ function reconnectStream(reason) {
 
   if (!hasSuccessfulFrameSinceConnect && nowMs - connectStartedAtMs > startupGraceMs) {
     reconnectAttemptsSinceSuccess += 1;
+
+    if (reconnectAttemptsSinceSuccess >= 2) {
+      showSnapshotFallback('Live stream unstable.');
+    }
+
+    if (reconnectAttemptsSinceSuccess % 3 === 0 && advanceStreamSource()) {
+      setStatus('Switching to alternate stream source #' + (currentStreamIndex + 1) + '...');
+    }
+
     if (reconnectAttemptsSinceSuccess >= modeSwitchAfterFailedReconnects) {
       reconnectAttemptsSinceSuccess = 0;
       preferNativeMode = !preferNativeMode;
@@ -363,7 +484,7 @@ function connectStream() {
   if (preferNativeMode && nativeHlsSupported) {
     setStatus('Native HLS mode. Loading stream...');
     video.onloadedmetadata = tryPlay;
-    video.src = src;
+    video.src = getCurrentStreamUrl();
     video.load();
     attachCommonRecovery();
     return;
@@ -393,7 +514,7 @@ function connectStream() {
         return;
       }
       setStatus('Media attached. Loading manifest...');
-      nextHls.loadSource(src);
+      nextHls.loadSource(getCurrentStreamUrl());
     });
 
     nextHls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -470,7 +591,7 @@ function connectStream() {
   if (nativeHlsSupported) {
     setStatus('Native HLS detected. Loading stream...');
     video.onloadedmetadata = tryPlay;
-    video.src = src;
+    video.src = getCurrentStreamUrl();
     video.load();
     attachCommonRecovery();
     return;
@@ -603,6 +724,7 @@ setInterval(() => {
     ? nowMs - reconnectQueuedSinceAtMs
     : 0;
   const modeText = preferNativeMode ? 'native' : 'hlsjs';
+  const sourceText = (currentStreamIndex + 1) + '/' + streamSources.length;
 
   setStatus(
     'readyState=' + video.readyState +
@@ -610,6 +732,8 @@ setInterval(() => {
     ' stalledFor=' + Math.floor(stalledForMs / 1000) + 's' +
     ' unhealthyFor=' + Math.floor(unhealthyForMs / 1000) + 's' +
     ' mode=' + modeText +
+    ' src=' + sourceText +
+    (snapshotModeActive ? ' snapshot=on' : ' snapshot=off') +
     (reconnectTimerId ? ' reconnectQueued=1' : ' reconnectQueued=0') +
     ' queueCount=' + reconnectQueueCount +
     ' queuedFor=' + Math.floor(queuedForMs / 1000) + 's'
